@@ -1,8 +1,15 @@
+# CollectLocal — Automated Scraper Pipeline
+# Runs on GitHub Actions FREE tier (2,000 min/month for private repos)
+# Scrapes FB Marketplace → enriches with TCG API → pushes to Supabase
+
 name: Scrape Marketplace
 
 on:
+  # Run every 6 hours (4x/day to stay within free tier budgets)
   schedule:
     - cron: '0 */6 * * *'
+
+  # Allow manual trigger for testing
   workflow_dispatch:
 
 jobs:
@@ -30,4 +37,6 @@ jobs:
           HOME_LNG: ${{ secrets.HOME_LNG }}
           SEARCH_LOCATION: ${{ secrets.SEARCH_LOCATION }}
           SEARCH_RADIUS_MILES: ${{ secrets.SEARCH_RADIUS_MILES }}
+          EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
+          EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
         run: python scraper.py
