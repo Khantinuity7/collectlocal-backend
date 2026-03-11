@@ -34,7 +34,8 @@ SEARCH_RADIUS = int(os.environ.get("SEARCH_RADIUS_MILES", "40"))
 CITY_SLUG = SEARCH_LOCATION.split(",")[0].strip().lower().replace(" ", "")
 
 # Apify actor for FB Marketplace scraping (free $5/month credits)
-APIFY_ACTOR_ID = "apify/facebook-marketplace-scraper"
+# NOTE: Use tilde (~) not slash (/) in actor ID for the API URL
+APIFY_ACTOR_ID = "apify~facebook-marketplace-scraper"
 
 # Search terms that cover the Pokémon card market
 SEARCH_QUERIES = [
@@ -196,6 +197,7 @@ def run_apify_scraper(search_query: str, max_items: int = 25) -> list:
 
     encoded_query = quote(search_query)
     fb_url = f"https://www.facebook.com/marketplace/{CITY_SLUG}/search?query={encoded_query}"
+    print(f"  📎 FB URL: {fb_url}")
 
     url = f"https://api.apify.com/v2/acts/{APIFY_ACTOR_ID}/run-sync-get-dataset-items"
     params = {"token": APIFY_TOKEN}
@@ -215,6 +217,7 @@ def run_apify_scraper(search_query: str, max_items: int = 25) -> list:
                 return items
             else:
                 print(f"  ⚠️ Unexpected response type: {type(items)}")
+                print(f"  ⚠️ Response preview: {str(items)[:300]}")
                 return []
         else:
             print(f"  ❌ Apify returned {resp.status_code}: {resp.text[:300]}")
@@ -377,6 +380,7 @@ def main():
     print("🚀 CollectLocal Scraper Starting...")
     print(f"   Location: {SEARCH_LOCATION} (radius: {SEARCH_RADIUS} mi)")
     print(f"   City slug: {CITY_SLUG}")
+    print(f"   Actor ID: {APIFY_ACTOR_ID}")
     print(f"   Queries: {len(SEARCH_QUERIES)}")
     print()
 
