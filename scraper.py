@@ -910,6 +910,35 @@ def process_apify_result(item: dict) -> dict | None:
         return None
 
 
+# ── Supabase Dedup Check ──────────────────────────────────────
+
+def fetch_existing_ids() -> set:
+    """
+    Fetch all external_ids from Supabase that are still active.
+    Used to skip re-processing listings we already have.
+    This saves Apify credits, eBay API calls, and TCG API calls.
+    """
+    url = f"{SUPABASE_URL}/rest/v1/listings"
+    params = {
+        "select": "external_id",
+        "is_active": "eq.true",
+        "limit": 5000,
+    }
+    try:
+        resp = requests.get(url, params=params, headers=SUPABASE_HEADERS, timeout=30)
+        if resp.status_code == 200:
+            rows = resp.json()
+            ids = {r["external_id"] for r in rows if r.get("external_id")}
+            print(f"  📋 Loaded {len(ids)} existing listing IDs from Supabase")
+            return ids
+        else:
+            print(f"  ⚠️ Could not fetch existing IDs: {resp.status_code}")
+            return set()
+    except Exception as e:
+        print(f"  ⚠️ Could not fetch existing IDs: {e}")
+        return set()
+
+
 # ── Supabase Upsert ───────────────────────────────────────────
 
 def upsert_listings(listings: list[dict]) -> int:
@@ -1013,6 +1042,62 @@ def backfill_from_dataset(dataset_id: str):
 
 # ── Main Pipeline ──────────────────────────────────────────────
 
+def extract_external_id(item: dict) -> str | None:
+    """
+    Quickly extract the external_id from a raw Apify item WITHOUT
+    doing any expensive processing (no eBay/TCG API calls).
+    Returns None if the item is clearly invalid.
+    """
+    title = (
+        item.get("marketplace_listing_title")
+        or item.get("title")
+        or item.get("name")
+        or ""
+    ).strip()
+    if not title:
+        return None
+    if item.get("is_sold"):
+        return None
+
+    price = 0
+    listing_price = item.get("listing_price")
+    if isinstance(listing_price, dict):
+        try:
+            price = float(listing_price.get("amount", "0"))
+        except (ValueError, TypeError):
+            price = 0
+    else:
+        price_str = str(item.get("price", "0"))
+        price_clean = re.sub(r"[^\d.]", "", price_str)
+        price = float(price_clean) if price_clean else 0
+
+    if price <= 0 or price > 50000:
+        return None
+
+    ext_id = str(item.get("id") or item.get("url") or item.get("listingUrl") or f"{title}-{price}")
+    return ext_id[:200]
+
+
+def select_queries_for_run(queries: list[str], max_per_run: int = 3) -> list[str]:
+    """
+    Rotate which queries run on each invocation.
+    Uses the current date to deterministically pick a subset,
+    so each day a different set of queries runs.
+    Over 3 days all 9 queries will have run.
+    """
+    import hashlib
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    day_hash = int(hashlib.md5(today.encode()).hexdigest(), 16)
+    start = (day_hash % len(queries))
+
+    selected = []
+    for i in range(max_per_run):
+        idx = (start + i) % len(queries)
+        selected.append(queries[idx])
+
+    return selected
+
+
 def main():
     # Check for backfill mode
     backfill_ds = os.environ.get("BACKFILL_DATASET", "")
@@ -1023,31 +1108,59 @@ def main():
     # Whether to enrich listings with detail page data (default: true)
     enrich_detail = os.environ.get("ENRICH_DETAILS", "true").lower() == "true"
 
+    # Query rotation: run a subset per invocation to save Apify credits
+    # Set RUN_ALL_QUERIES=true to override and run all 9
+    run_all = os.environ.get("RUN_ALL_QUERIES", "false").lower() == "true"
+    queries_per_run = int(os.environ.get("QUERIES_PER_RUN", "3"))
+
+    if run_all:
+        active_queries = SEARCH_QUERIES
+    else:
+        active_queries = select_queries_for_run(SEARCH_QUERIES, max_per_run=queries_per_run)
+
     print("🚀 CollectLocal Scraper Starting...")
     print(f"   Location: {SEARCH_LOCATION} (radius: {SEARCH_RADIUS} mi)")
     print(f"   City slug: {CITY_SLUG}")
     print(f"   Actor ID: {APIFY_ACTOR_ID}")
-    print(f"   Queries: {len(SEARCH_QUERIES)}")
+    print(f"   Queries this run: {len(active_queries)} of {len(SEARCH_QUERIES)}")
+    print(f"   Active queries: {active_queries}")
     print(f"   Detail enrichment: {'ON' if enrich_detail else 'OFF'}")
     print(f"   eBay pricing: {'ON' if EBAY_CLIENT_ID else 'OFF (set EBAY_CLIENT_ID to enable)'}")
     print()
 
+    # ── Pre-fetch existing IDs to skip duplicates ──
+    existing_ids = fetch_existing_ids()
+
     all_listings = []
     seen_ids = set()
+    skipped_existing = 0
 
-    for query in SEARCH_QUERIES:
+    for query in active_queries:
         raw_items = run_apify_scraper(query, max_items=25)
 
         for item in raw_items:
+            # Quick ID extraction (no API calls) to check for duplicates
+            ext_id = extract_external_id(item)
+            if ext_id is None:
+                continue
+            if ext_id in seen_ids:
+                continue
+            if ext_id in existing_ids:
+                skipped_existing += 1
+                seen_ids.add(ext_id)
+                continue
+
+            # Only now do the expensive processing (eBay + TCG API calls)
             processed = process_apify_result(item)
-            if processed and processed["external_id"] not in seen_ids:
+            if processed:
                 seen_ids.add(processed["external_id"])
                 all_listings.append(processed)
 
         # Small delay between queries to be polite
         time.sleep(2)
 
-    print(f"\n📊 Processed {len(all_listings)} unique listings")
+    print(f"\n📊 Processed {len(all_listings)} new listings")
+    print(f"   ⏭️  Skipped {skipped_existing} already-in-Supabase listings (saved API calls)")
 
     # Enrich with detail page data (descriptions + lat/lng) — free!
     if all_listings and enrich_detail:
@@ -1058,8 +1171,8 @@ def main():
         print(f"✅ Upserted {upserted} listings to Supabase")
         log_scrape_run(len(all_listings), upserted, "success")
     else:
-        print("⚠️ No listings to upsert")
-        log_scrape_run(0, 0, "success", "No listings found")
+        print("⚠️ No new listings to upsert")
+        log_scrape_run(0, 0, "success", f"No new listings (skipped {skipped_existing} existing)")
 
     print("🏁 Done!")
 
