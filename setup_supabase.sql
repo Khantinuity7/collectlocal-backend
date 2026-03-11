@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS listings (
     lng DECIMAL(10,6),                  -- Seller longitude
     description TEXT,                   -- Listing description
     listing_url TEXT,                   -- Direct link to the marketplace listing
+    ebay_price DECIMAL(10,2),           -- eBay lowest Buy It Now price (real floor price)
+    ebay_url TEXT,                      -- eBay search URL for this card (tap to see listings)
     scraped_at TIMESTAMPTZ DEFAULT NOW(),
     is_active BOOLEAN DEFAULT TRUE,     -- Set false when listing is sold/removed
     created_at TIMESTAMPTZ DEFAULT NOW()
