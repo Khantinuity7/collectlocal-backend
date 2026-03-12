@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS listings (
     price DECIMAL(10,2) NOT NULL,       -- Listing price in USD
     market_price DECIMAL(10,2),         -- Market value from TCGPlayer/eBay
     market_source TEXT DEFAULT 'tcgplayer', -- Where market price came from
-    image_url TEXT,                     -- Card image URL
+    image_url TEXT,                     -- Card image URL (primary/TCG API)
+    listing_photos JSONB DEFAULT '[]'::jsonb,  -- All original listing photos (array of URLs)
     marketplace TEXT DEFAULT 'facebook', -- Source marketplace
     location TEXT,                      -- Seller location text
     distance INTEGER DEFAULT 0,         -- Miles from configured home location
