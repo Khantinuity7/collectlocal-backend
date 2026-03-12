@@ -1,6 +1,6 @@
 # CollectLocal — Automated Scraper Pipeline
 # Runs on GitHub Actions FREE tier (2,000 min/month for private repos)
-# Scrapes FB Marketplace → enriches with TCG API → pushes to Supabase
+# Scrapes FB Marketplace → AI vision card ID → enriches with TCG API → pushes to Supabase
 
 name: Scrape Marketplace
 
@@ -39,4 +39,5 @@ jobs:
           SEARCH_RADIUS_MILES: ${{ secrets.SEARCH_RADIUS_MILES }}
           EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
           EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python scraper.py
