@@ -766,6 +766,273 @@ def lookup_market_price(card_name: str, set_name: str = "") -> dict | None:
     return None
 
 
+# ── TCGTracking Open API (free TCGPlayer + Manapool pricing, no auth) ──
+
+TCGTRACK_BASE = "https://tcgtracking.com/tcgapi/v1"
+# TCGPlayer category IDs (same across TCGTracking & TCGPlayer)
+TCGTRACK_CATEGORIES = {
+    "pokemon": 3,
+    "onepiece": 73,      # One Piece Card Game
+    "lorcana": 86,
+    "yugioh": 2,
+    "magic": 1,
+}
+_tcgtrack_sets_cache = {}      # {category_id: {set_name_lower: set_data}}
+_tcgtrack_products_cache = {}  # {(category_id, set_id): {clean_name_lower: product}}
+_tcgtrack_pricing_cache = {}   # {(category_id, set_id): {product_id: {subtype: price_data}}}
+_tcgtrack_skus_cache = {}      # {(category_id, set_id): {product_id: {sku_id: sku_data}}}
+
+
+def _tcgtrack_load_sets(category_id: int) -> dict:
+    """Load all sets for a category. Returns {set_name_lower: set_data}."""
+    if category_id in _tcgtrack_sets_cache:
+        return _tcgtrack_sets_cache[category_id]
+
+    try:
+        resp = requests.get(f"{TCGTRACK_BASE}/{category_id}/sets", timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            sets = {}
+            for s in data.get("sets", []):
+                sets[s["name"].lower()] = s
+            _tcgtrack_sets_cache[category_id] = sets
+            print(f"  📦 TCGTracking: Loaded {len(sets)} sets for category {category_id}")
+            return sets
+    except Exception as e:
+        print(f"  ⚠️ TCGTracking sets load failed for category {category_id}: {e}")
+
+    _tcgtrack_sets_cache[category_id] = {}
+    return {}
+
+
+def _tcgtrack_load_products(category_id: int, set_id: int) -> dict:
+    """Load all products for a set. Returns {clean_name_lower: product}."""
+    cache_key = (category_id, set_id)
+    if cache_key in _tcgtrack_products_cache:
+        return _tcgtrack_products_cache[cache_key]
+
+    try:
+        resp = requests.get(f"{TCGTRACK_BASE}/{category_id}/sets/{set_id}", timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            products = {}
+            for p in data.get("products", []):
+                clean = (p.get("clean_name") or p["name"]).lower()
+                products[clean] = p
+                products[p["name"].lower()] = p
+            _tcgtrack_products_cache[cache_key] = products
+            print(f"  🃏 TCGTracking: Loaded {len(data.get('products', []))} products in set {set_id}")
+            return products
+    except Exception as e:
+        print(f"  ⚠️ TCGTracking products load failed for set {set_id}: {e}")
+
+    _tcgtrack_products_cache[cache_key] = {}
+    return {}
+
+
+def _tcgtrack_load_pricing(category_id: int, set_id: int) -> dict:
+    """Load pricing for all products in a set. Returns {product_id_str: {"tcg": {...}, "manapool": {...}}}."""
+    cache_key = (category_id, set_id)
+    if cache_key in _tcgtrack_pricing_cache:
+        return _tcgtrack_pricing_cache[cache_key]
+
+    try:
+        resp = requests.get(f"{TCGTRACK_BASE}/{category_id}/sets/{set_id}/pricing", timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            prices = data.get("prices", {})
+            _tcgtrack_pricing_cache[cache_key] = prices
+            print(f"  💰 TCGTracking: Loaded pricing for {len(prices)} products in set {set_id}")
+            return prices
+    except Exception as e:
+        print(f"  ⚠️ TCGTracking pricing load failed for set {set_id}: {e}")
+
+    _tcgtrack_pricing_cache[cache_key] = {}
+    return {}
+
+
+def _tcgtrack_load_skus(category_id: int, set_id: int) -> dict:
+    """Load SKU-level pricing (by condition/variant/language). Returns {product_id_str: {sku_id: sku}}."""
+    cache_key = (category_id, set_id)
+    if cache_key in _tcgtrack_skus_cache:
+        return _tcgtrack_skus_cache[cache_key]
+
+    try:
+        resp = requests.get(f"{TCGTRACK_BASE}/{category_id}/sets/{set_id}/skus", timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            products = data.get("products", {})
+            _tcgtrack_skus_cache[cache_key] = products
+            sku_count = data.get("sku_count", 0)
+            print(f"  🏷️ TCGTracking: Loaded {sku_count} SKUs for set {set_id}")
+            return products
+    except Exception as e:
+        print(f"  ⚠️ TCGTracking SKUs load failed for set {set_id}: {e}")
+
+    _tcgtrack_skus_cache[cache_key] = {}
+    return {}
+
+
+def _tcgtrack_search_sets(category_id: int, query: str) -> list:
+    """Search sets by name within a category. Returns list of matching sets."""
+    try:
+        resp = requests.get(
+            f"{TCGTRACK_BASE}/{category_id}/search",
+            params={"q": query},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return data.get("sets", data.get("results", []))
+    except Exception as e:
+        print(f"  ⚠️ TCGTracking search failed for '{query}': {e}")
+    return []
+
+
+def lookup_tcgtrack_price(card_name: str, set_name: str = "", tcg: str = "pokemon") -> dict | None:
+    """
+    Look up market price from TCGTracking Open API (free, no auth, Cloudflare CDN).
+    Returns {"market_price": float, "low_price": float, "market_source": str,
+             "tcgplayer_url": str, "sub_type": str, "skus": [...]}
+
+    TCGTracking serves TCGPlayer + Manapool pricing data, updated daily at 8 AM EST.
+    Includes SKU-level pricing by condition (NM/LP/MP/HP/DMG), variant, and language.
+    55 games, 423K+ products, 6.9M+ SKUs. No rate limits. CORS enabled.
+    """
+    category_id = TCGTRACK_CATEGORIES.get(tcg.lower())
+    if not category_id:
+        return None
+
+    # 1. Find the matching set
+    sets = _tcgtrack_load_sets(category_id)
+    if not sets:
+        return None
+
+    set_data = None
+    set_id = None
+
+    if set_name:
+        set_lower = set_name.lower()
+        # Try exact match first
+        if set_lower in sets:
+            set_data = sets[set_lower]
+        else:
+            # Substring match
+            for sname, sdata in sets.items():
+                if set_lower in sname or sname in set_lower:
+                    set_data = sdata
+                    break
+
+        # Last resort: use search endpoint
+        if not set_data:
+            search_results = _tcgtrack_search_sets(category_id, set_name)
+            if search_results:
+                set_data = search_results[0]
+
+    if not set_data:
+        print(f"  ℹ️ TCGTracking: No matching set for '{set_name}' in {tcg}")
+        return None
+
+    set_id = set_data.get("id") or set_data.get("set_id") or set_data.get("groupId")
+    if not set_id:
+        return None
+
+    # 2. Load products and find the card
+    products = _tcgtrack_load_products(category_id, set_id)
+    if not products:
+        return None
+
+    card_lower = card_name.lower()
+    product = products.get(card_lower)
+
+    # Fuzzy match
+    if not product:
+        for pname, pdata in products.items():
+            if card_lower in pname or pname in card_lower:
+                product = pdata
+                break
+
+    if not product:
+        print(f"  ℹ️ TCGTracking: No product match for '{card_name}' in set '{set_name}'")
+        return None
+
+    product_id = product["id"]
+    product_id_str = str(product_id)
+
+    # 3. Get pricing for this product
+    pricing = _tcgtrack_load_pricing(category_id, set_id)
+    product_pricing = pricing.get(product_id_str, {})
+    tcg_prices = product_pricing.get("tcg", {})
+
+    if not tcg_prices:
+        return None
+
+    # Pick the best subtype price (prefer Holofoil > Reverse Holofoil > Normal > 1st Edition)
+    preferred_order = ["Holofoil", "Reverse Holofoil", "Normal", "1st Edition Holofoil",
+                       "1st Edition Normal", "Unlimited Holofoil", "Unlimited Normal", "Foil"]
+    best_subtype = None
+    best_price_data = None
+
+    for pref in preferred_order:
+        if pref in tcg_prices and tcg_prices[pref].get("market"):
+            best_subtype = pref
+            best_price_data = tcg_prices[pref]
+            break
+
+    # Fallback: any subtype with a market price
+    if not best_price_data:
+        for subtype, price_data in tcg_prices.items():
+            if price_data.get("market"):
+                best_subtype = subtype
+                best_price_data = price_data
+                break
+
+    if not best_price_data:
+        return None
+
+    # 4. Get SKU-level pricing (condition breakdown) if available
+    skus_data = _tcgtrack_load_skus(category_id, set_id)
+    product_skus = skus_data.get(product_id_str, {})
+    sku_list = []
+    for sku_id, sku in product_skus.items():
+        sku_list.append({
+            "sku_id": sku_id,
+            "condition": sku.get("cnd", ""),       # NM, LP, MP, HP, DMG
+            "variant": sku.get("var", ""),          # N=Normal, F=Foil
+            "language": sku.get("lng", ""),          # EN, JP, etc.
+            "market_price": sku.get("mkt"),
+            "low_price": sku.get("low"),
+            "high_price": sku.get("hi"),
+            "listing_count": sku.get("cnt", 0),
+        })
+
+    # Get Manapool pricing as additional data
+    manapool = product_pricing.get("manapool", {})
+
+    result = {
+        "market_price": best_price_data["market"],
+        "low_price": best_price_data.get("low"),
+        "market_source": "tcgplayer",
+        "sub_type": best_subtype,
+        "tcgplayer_url": product.get("tcgplayer_url", product.get("url", "")),
+        "manapool_url": product.get("manapool_url", ""),
+        "image_url": product.get("image_url", product.get("imageUrl", "")),
+        "set": set_data.get("name", set_name),
+        "number": product.get("number", ""),
+        "rarity": product.get("rarity", ""),
+        # All subtype prices (e.g. Normal, Holofoil, Reverse Holofoil)
+        "all_subtypes": {st: {"market": p.get("market"), "low": p.get("low")} for st, p in tcg_prices.items()},
+        # Manapool prices (alternative marketplace)
+        "manapool_prices": manapool,
+        # SKU-level pricing by condition/variant/language
+        "skus": sku_list,
+    }
+
+    print(f"  ✅ TCGTracking: {card_name} = ${best_price_data['market']:.2f} ({best_subtype})"
+          f" | {len(sku_list)} SKUs")
+    return result
+
+
 # ── eBay Browse API (active listings for market price) ─────────
 
 _ebay_token = {"access_token": "", "expires_at": 0}
@@ -921,46 +1188,72 @@ def lookup_ebay_prices(search_term: str, category_id: str = "183454") -> dict | 
 
 # ── Combined Market Price Lookup ───────────────────────────────
 
-def lookup_combined_market_price(card_name: str, grade: str = "", set_name: str = "", card_number: str = "") -> dict:
+def lookup_combined_market_price(card_name: str, grade: str = "", set_name: str = "", card_number: str = "", tcg: str = "pokemon") -> dict:
     """
-    Look up market price from both Pokémon TCG API and eBay Browse API.
-    eBay price = lowest current Buy It Now listing (real floor price).
-    TCGPlayer price = market average from pokemontcg.io API.
+    Look up market price from TCGTracking (primary), Pokémon TCG API (fallback), and eBay.
+    Priority: TCGTracking → pokemontcg.io → eBay lowest BIN.
+
+    TCGTracking provides real TCGPlayer + Manapool prices for free (no API key needed).
+    Updated daily 8 AM EST. 55 games, 423K+ products, 6.9M+ SKUs. No rate limits.
 
     card_number: e.g. "209/187" — included in eBay search for precise matching.
+    tcg: which card game — "pokemon", "onepiece", "lorcana", "yugioh", "magic"
     """
-    # 1. Try Pokémon TCG API first (free, fast, reliable)
-    tcg_data = lookup_market_price(card_name, set_name)
+    # 1. Try TCGTracking first (free, no auth, real TCGPlayer + Manapool data, SKU-level)
+    tcgtrack_data = lookup_tcgtrack_price(card_name, set_name, tcg=tcg)
 
-    # 2. Try eBay Browse API — lowest BIN as market price
+    # 2. Fallback: Try Pokémon TCG API (only works for Pokemon)
+    tcg_data = None
+    if not tcgtrack_data and tcg == "pokemon":
+        tcg_data = lookup_market_price(card_name, set_name)
+
+    # 3. Try eBay Browse API — lowest BIN as secondary price
     ebay_data = None
     if EBAY_CLIENT_ID:
-        # Build a search term that includes grade + card number for accurate pricing
         ebay_search = card_name
         if card_number:
             ebay_search = f"{card_name} {card_number}"
         if grade and grade not in ("Raw", "Sealed"):
             ebay_search = f"{grade} {ebay_search}"
         elif grade == "Sealed":
-            ebay_search = card_name  # Category will switch to sealed
+            ebay_search = card_name
 
         ebay_data = lookup_ebay_prices(ebay_search)
 
-    # 3. Combine results — include BOTH direct BIN listing URL and search fallback
+    # 4. Combine results — TCGCSV is primary, eBay is secondary
     result = {
         "market_price": None,
         "market_source": "",
+        "low_price": None,
+        "mid_price": None,
+        "high_price": None,
         "image_url": "",
         "set": "",
         "number": "",
+        "tcgplayer_url": "",
         "ebay_price": None,
-        "ebay_url": None,           # Search fallback URL (always generated)
-        "ebay_listing_url": None,    # Direct BIN listing URL (when exact match found)
-        "ebay_listing_title": None,  # Title of matched eBay listing
-        "ebay_num_results": 0,       # Number of eBay results found
+        "ebay_url": None,
+        "ebay_listing_url": None,
+        "ebay_listing_title": None,
+        "ebay_num_results": 0,
     }
 
-    if tcg_data:
+    # TCGTracking has the best data (real TCGPlayer prices + SKU-level condition pricing)
+    if tcgtrack_data:
+        result["market_price"] = tcgtrack_data["market_price"]
+        result["market_source"] = "tcgplayer"
+        result["low_price"] = tcgtrack_data.get("low_price")
+        result["image_url"] = tcgtrack_data.get("image_url", "")
+        result["set"] = tcgtrack_data.get("set", "")
+        result["number"] = tcgtrack_data.get("number", "")
+        result["tcgplayer_url"] = tcgtrack_data.get("tcgplayer_url", "")
+        result["sub_type"] = tcgtrack_data.get("sub_type", "")
+        result["rarity"] = tcgtrack_data.get("rarity", "")
+        result["all_subtypes"] = tcgtrack_data.get("all_subtypes", {})
+        result["manapool_prices"] = tcgtrack_data.get("manapool_prices", {})
+        result["skus"] = tcgtrack_data.get("skus", [])
+    elif tcg_data:
+        # Fallback to pokemontcg.io
         result["market_price"] = tcg_data["market_price"]
         result["market_source"] = "tcgplayer"
         result["image_url"] = tcg_data["image_url"]
@@ -974,7 +1267,7 @@ def lookup_combined_market_price(card_name: str, grade: str = "", set_name: str 
         result["ebay_listing_title"] = ebay_data.get("ebay_listing_title")
         result["ebay_num_results"] = ebay_data.get("ebay_num_results", 0)
 
-        # If no TCG price, use eBay lowest BIN as primary market price
+        # If no TCG price at all, use eBay lowest BIN as primary
         if not result["market_price"]:
             result["market_price"] = ebay_data["ebay_price"]
             result["market_source"] = "ebay"
