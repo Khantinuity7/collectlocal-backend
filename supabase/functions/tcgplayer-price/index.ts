@@ -6,7 +6,7 @@
  *
  * Endpoints:
  *   POST /tcgplayer-price
- *   Body: { cardName: string, setName: string, tcg?: string }
+ *   Body: { cardName: string, setName: string, tcg?: string, cardNumber?: string }
  *   Returns: { marketPrice, lowPrice, subType, skus[], allSubtypes, tcgplayerUrl }
  *
  * Data source: tcgtracking.com/tcgapi — TCGPlayer + Manapool + CardTrader data.
@@ -55,21 +55,27 @@ async function loadSets(catId: number): Promise<Record<string, any>> {
   return sets;
 }
 
-async function loadProducts(catId: number, setId: number): Promise<Record<string, any>> {
+async function loadProducts(catId: number, setId: number): Promise<{ byName: Record<string, any>; byNumber: Record<string, any>; list: any[] }> {
   const key = `${catId}-${setId}`;
   if (productsCache[key] && isFresh(productsCache[key].ts)) return productsCache[key].data;
 
   const resp = await fetch(`${TCGTRACK_BASE}/${catId}/sets/${setId}`);
-  if (!resp.ok) return {};
+  if (!resp.ok) return { byName: {}, byNumber: {}, list: [] };
   const json = await resp.json();
-  const products: Record<string, any> = {};
-  for (const p of json.products || []) {
+  const byName: Record<string, any> = {};
+  const byNumber: Record<string, any> = {};
+  const list: any[] = json.products || [];
+  for (const p of list) {
     const clean = (p.clean_name || p.name).toLowerCase();
-    products[clean] = p;
-    products[p.name.toLowerCase()] = p;
+    byName[clean] = p;
+    byName[p.name.toLowerCase()] = p;
+    if (p.number) {
+      byNumber[p.number.toLowerCase()] = p;
+    }
   }
-  productsCache[key] = { data: products, ts: Date.now() };
-  return products;
+  const data = { byName, byNumber, list };
+  productsCache[key] = { data, ts: Date.now() };
+  return data;
 }
 
 async function loadPricing(catId: number, setId: number): Promise<Record<string, any>> {
@@ -107,10 +113,42 @@ function findSet(sets: Record<string, any>, name: string): any | null {
   return null;
 }
 
-function findProduct(products: Record<string, any>, name: string): any | null {
+function findProduct(
+  productsData: { byName: Record<string, any>; byNumber: Record<string, any>; list: any[] },
+  name: string,
+  cardNumber?: string,
+): any | null {
+  const { byName, byNumber, list } = productsData;
+
+  // 1. Exact match by card number (most reliable)
+  if (cardNumber) {
+    const num = cardNumber.toLowerCase();
+    if (byNumber[num]) return byNumber[num];
+    // Try matching product name that ends with "- {number}"
+    for (const p of list) {
+      if (p.number && p.number.toLowerCase() === num) return p;
+    }
+  }
+
+  // 2. Exact match by name
   const lower = name.toLowerCase();
-  if (products[lower]) return products[lower];
-  for (const [pname, pdata] of Object.entries(products)) {
+  if (byName[lower]) return byName[lower];
+
+  // 3. If cardNumber provided, try name + number combo (e.g. "Charizard ex - 215/197")
+  if (cardNumber) {
+    const withNumber = `${lower} - ${cardNumber.toLowerCase()}`;
+    if (byName[withNumber]) return byName[withNumber];
+    // Fuzzy: find product whose name contains both the card name and number
+    for (const p of list) {
+      const pLower = p.name.toLowerCase();
+      if (pLower.includes(lower) && p.number && p.number.toLowerCase() === cardNumber.toLowerCase()) {
+        return p;
+      }
+    }
+  }
+
+  // 4. Fuzzy name match (fallback)
+  for (const [pname, pdata] of Object.entries(byName)) {
     if (lower.includes(pname) || pname.includes(lower)) return pdata;
   }
   return null;
@@ -144,7 +182,7 @@ serve(async (req: Request) => {
   }
 
   try {
-    const { cardName, setName, tcg = "pokemon" } = await req.json();
+    const { cardName, setName, tcg = "pokemon", cardNumber } = await req.json();
 
     if (!cardName) {
       return new Response(
@@ -172,9 +210,9 @@ serve(async (req: Request) => {
     }
     const setId = setData.id ?? setData.set_id ?? setData.groupId;
 
-    // 2. Find product
+    // 2. Find product (by number first if available, then by name)
     const products = await loadProducts(catId, setId);
-    const product = findProduct(products, cardName);
+    const product = findProduct(products, cardName, cardNumber);
     if (!product) {
       return new Response(
         JSON.stringify({ error: `Card not found: ${cardName}`, marketPrice: null }),
