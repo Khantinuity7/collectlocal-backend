@@ -21,8 +21,8 @@ const TCGTRACK_BASE = "https://tcgtracking.com/tcgapi/v1";
 // TCGPlayer category IDs
 const CATEGORIES: Record<string, number> = {
   pokemon: 3,
-  onepiece: 73,
-  lorcana: 86,
+  onepiece: 68,
+  lorcana: 71,
   yugioh: 2,
   magic: 1,
 };
