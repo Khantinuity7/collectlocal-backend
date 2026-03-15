@@ -772,8 +772,8 @@ TCGTRACK_BASE = "https://tcgtracking.com/tcgapi/v1"
 # TCGPlayer category IDs (same across TCGTracking & TCGPlayer)
 TCGTRACK_CATEGORIES = {
     "pokemon": 3,
-    "onepiece": 73,      # One Piece Card Game
-    "lorcana": 86,
+    "onepiece": 68,      # One Piece Card Game
+    "lorcana": 71,       # Disney Lorcana TCG
     "yugioh": 2,
     "magic": 1,
 }
