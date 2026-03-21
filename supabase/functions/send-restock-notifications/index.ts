@@ -1,5 +1,5 @@
 /**
- * CollectLocal â Restock Push Notification Edge Function
+ * CollectLocal — Restock Push Notification Edge Function
  * ======================================================
  * Called by restock_checker.py when a restock event is detected.
  *
@@ -19,13 +19,13 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-// FCM V1 API â uses service account JSON (base64-encoded) for OAuth2
+// FCM V1 API — uses service account JSON (base64-encoded) for OAuth2
 const FCM_SERVICE_ACCOUNT_B64 = Deno.env.get("FCM_SERVICE_ACCOUNT") || "";
 const FCM_PROJECT_ID = "collectlocal-57a42";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
-// ââ JWT / OAuth2 helpers for FCM V1 âââââââââââââââââââââââââââââ
+// ── JWT / OAuth2 helpers for FCM V1 ─────────────────────────────
 
 function base64UrlEncode(data: Uint8Array): string {
   return btoa(String.fromCharCode(...data))
@@ -204,8 +204,8 @@ serve(async (req) => {
         if (!withinRadius) continue;
 
         // 6. Send push notification via FCM
-        const title = `ð¨ ${product.name} Restocked!`;
-        const body = `Spotted at ${store.name} (${store.city}, ${store.state}) â ${event.new_quantity > 1 ? event.new_quantity + " units" : "Limited stock"}`;
+        const title = `🚨 ${product.name} Restocked!`;
+        const body = `Spotted at ${store.name} (${store.city}, ${store.state}) — ${event.new_quantity > 1 ? event.new_quantity + " units" : "Limited stock"}`;
 
         for (const token of tokens as DeviceToken[]) {
           const success = await sendFCMNotification(token.fcm_token, {
@@ -256,14 +256,14 @@ serve(async (req) => {
   }
 });
 
-// ââ FCM V1 Push Notification âââââââââââââââââââââââââââââââââââââ
+// ── FCM V1 Push Notification ─────────────────────────────────────
 
 async function sendFCMNotification(
   token: string,
   notification: { title: string; body: string; data?: Record<string, string> }
 ): Promise<boolean> {
   if (!FCM_SERVICE_ACCOUNT_B64) {
-    console.warn("FCM_SERVICE_ACCOUNT not set â skipping push notification");
+    console.warn("FCM_SERVICE_ACCOUNT not set — skipping push notification");
     return false;
   }
 
@@ -316,7 +316,7 @@ async function sendFCMNotification(
   }
 }
 
-// ââ Haversine Distance (miles) âââââââââââââââââââââââââââââââââ
+// ── Haversine Distance (miles) ─────────────────────────────────
 
 function haversine(
   lat1: number, lng1: number,

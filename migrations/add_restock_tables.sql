@@ -13,17 +13,17 @@ CREATE EXTENSION IF NOT EXISTS postgis;
 -- ============================================================
 CREATE TABLE IF NOT EXISTS restock_products (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name TEXT NOT NULL,
-    tcg TEXT NOT NULL,
-    product_type TEXT NOT NULL,
+    name TEXT NOT NULL,                     -- "Prismatic Evolutions Elite Trainer Box"
+    tcg TEXT NOT NULL,                      -- "pokemon", "one_piece"
+    product_type TEXT NOT NULL,             -- "etb", "booster_box", "blister", etc.
     msrp DECIMAL(10,2) NOT NULL,
-    upc TEXT,
-    target_dpci TEXT,
-    target_tcin TEXT,
-    walmart_sku TEXT,
-    walmart_url TEXT,
+    upc TEXT,                               -- Universal Product Code (barcode)
+    target_dpci TEXT,                       -- Target's internal ID (e.g., "087-16-2847")
+    target_tcin TEXT,                       -- Target.com item number for Redsky API
+    walmart_sku TEXT,                       -- Walmart's product ID
+    walmart_url TEXT,                       -- Direct Walmart product page URL
     image_url TEXT,
-    packaging_keywords TEXT[] DEFAULT '{}',
+    packaging_keywords TEXT[] DEFAULT '{}', -- For AI shelf detection matching
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -41,7 +41,7 @@ CREATE POLICY "Service role writes restock products" ON restock_products FOR ALL
 CREATE TABLE IF NOT EXISTS retail_stores (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     retailer TEXT NOT NULL CHECK (retailer IN ('target', 'walmart')),
-    store_number TEXT NOT NULL,
+    store_number TEXT NOT NULL,             -- "T-2474" or "W-5840"
     name TEXT NOT NULL,
     address TEXT NOT NULL,
     city TEXT NOT NULL,
@@ -50,9 +50,9 @@ CREATE TABLE IF NOT EXISTS retail_stores (
     lat DECIMAL(10,6) NOT NULL,
     lng DECIMAL(10,6) NOT NULL,
     phone TEXT,
-    location GEOGRAPHY(Point, 4326),
-    target_location_id TEXT,
-    walmart_store_id TEXT,
+    location GEOGRAPHY(Point, 4326),       -- PostGIS point for radius queries
+    target_location_id TEXT,               -- Target API location ID (for Redsky)
+    walmart_store_id TEXT,                 -- Walmart API store ID
     created_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(retailer, store_number)
 );
@@ -94,7 +94,7 @@ BEGIN
     WHERE ST_DWithin(
         rs.location,
         ST_SetSRID(ST_MakePoint(user_lng, user_lat), 4326)::geography,
-        radius_miles * 1609.34
+        radius_miles * 1609.34  -- Convert miles to meters
     )
     ORDER BY rs.location <-> ST_SetSRID(ST_MakePoint(user_lng, user_lat), 4326)::geography;
 END;
@@ -125,7 +125,7 @@ CREATE POLICY "Anyone can read store inventory" ON store_inventory FOR SELECT US
 CREATE POLICY "Service role writes store inventory" ON store_inventory FOR ALL USING (auth.role() = 'service_role');
 
 -- ============================================================
--- 4. RESTOCK EVENTS — logged when a product goes 0 to >0
+-- 4. RESTOCK EVENTS — logged when a product goes 0→>0
 -- Used to trigger push notifications
 -- ============================================================
 CREATE TABLE IF NOT EXISTS restock_events (
@@ -178,7 +178,7 @@ CREATE TABLE IF NOT EXISTS restock_reports (
     reporter_id UUID NOT NULL REFERENCES auth.users(id),
     store_id UUID NOT NULL REFERENCES retail_stores(id),
     photo_url TEXT,
-    photo_hash TEXT,
+    photo_hash TEXT,                        -- SHA-256 for dedup
     photo_exif_ts TIMESTAMPTZ,
     photo_lat DECIMAL(10,6),
     photo_lng DECIMAL(10,6),
@@ -250,8 +250,8 @@ CREATE TABLE IF NOT EXISTS device_tokens (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     fcm_token TEXT NOT NULL,
-    platform TEXT DEFAULT 'ios',
-    lat DECIMAL(10,6),
+    platform TEXT DEFAULT 'ios',           -- 'ios' or 'android'
+    lat DECIMAL(10,6),                     -- Last known user location
     lng DECIMAL(10,6),
     location GEOGRAPHY(Point, 4326),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
@@ -290,7 +290,7 @@ CREATE TABLE IF NOT EXISTS notification_log (
     product_name TEXT,
     store_name TEXT,
     sent_at TIMESTAMPTZ DEFAULT NOW(),
-    status TEXT DEFAULT 'sent'
+    status TEXT DEFAULT 'sent'              -- 'sent', 'failed', 'delivered'
 );
 
 CREATE INDEX IF NOT EXISTS idx_notification_log_user ON notification_log(user_id);

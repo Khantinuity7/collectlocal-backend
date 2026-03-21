@@ -159,12 +159,12 @@ def search_target(keyword, count=24, offset=0):
     Returns list of product dicts with tcin, name, price, image, dpci.
 
     FIRST-PARTY FILTER: Only includes products sold by Target directly.
-    Target's API includes a relationship_type_code field in the item data:
-      - "SA" (Standard Assortment) = Sold by Target
-      - "TAP" (Target Plus Partner) = Third-party marketplace seller
-      - "TPCL" (Target Plus Clearance) = Third-party clearance
+    Target's API includes a `relationship_type_code` field in the item data:
+      - "SA" (Standard Assortment) = Sold by Target ✅
+      - "TAP" (Target Plus Partner) = Third-party marketplace seller ❌
+      - "TPCL" (Target Plus Clearance) = Third-party clearance ❌
 
-    We also check for is_marketplace and seller_name fields as fallbacks.
+    We also check for `is_marketplace` and `seller_name` fields as fallbacks.
     Products with a DPCI (Department-Class-Item) code are almost always
     first-party Target items — marketplace items rarely have DPCIs.
     """
@@ -186,12 +186,12 @@ def search_target(keyword, count=24, offset=0):
         })
 
         if resp.status_code == 429:
-            print(f"    Rate limited on Target search. Waiting 60s...")
+            print(f"    ⚠️  Rate limited on Target search. Waiting 60s...")
             time.sleep(60)
             return search_target(keyword, count, offset)
 
         if resp.status_code != 200:
-            print(f"    Target search returned {resp.status_code}")
+            print(f"    ⚠️  Target search returned {resp.status_code}")
             return []
 
         data = resp.json()
@@ -208,13 +208,16 @@ def search_target(keyword, count=24, offset=0):
             name = item.get("product_description", {}).get("title", "")
             dpci = item.get("dpci", "")
 
-            # FIRST-PARTY SELLER FILTER
+            # ── FIRST-PARTY SELLER FILTER ──────────────────────
             # Method 1: Check relationship_type_code
+            #   "SA" = Standard Assortment (sold by Target) ✅
+            #   "TAP" = Target Plus Partner (third-party) ❌
+            #   "TPCL" = Target Plus Clearance (third-party) ❌
             relationship = item.get("relationship_type_code", "")
             if relationship and relationship in ("TAP", "TPCL"):
                 continue  # Skip third-party marketplace sellers
 
-            # Method 2: Check is_marketplace flag
+            # Method 2: Check is_marketplace flag (some API responses include this)
             if item.get("is_marketplace") is True:
                 continue
 
@@ -230,13 +233,15 @@ def search_target(keyword, count=24, offset=0):
             for label in product_labels:
                 label_lower = str(label).lower()
                 if "target plus" in label_lower or "sold by " in label_lower:
+                    # "Sold by [ThirdPartyName]" indicates marketplace
                     if "sold by target" not in label_lower:
                         is_third_party = True
                         break
             if is_third_party:
                 continue
 
-            # Method 5: Price sanity check
+            # Method 5: Price sanity check — if price is way above MSRP,
+            # it's likely a third-party scalper listing
             current_price = price_data.get("formatted_current_price", "")
             price = None
             if current_price:
@@ -244,9 +249,14 @@ def search_target(keyword, count=24, offset=0):
                 if match:
                     price = float(match.group())
 
+            # TCG sealed products at Target are MSRP. If the price is more than
+            # 2x the typical MSRP range ($5-$200), it's almost certainly a
+            # third-party scalper listing
             if price and price > 400:
-                print(f"    Skipping (price ${price:.2f} too high, likely 3P): {name[:50]}")
+                print(f"    ⚠️  Skipping (price ${price:.2f} too high, likely 3P): {name[:50]}")
                 continue
+
+            # ── END FIRST-PARTY FILTER ─────────────────────────
 
             # Get primary image
             images = item.get("enrichment", {}).get("images", {})
@@ -270,14 +280,17 @@ def search_target(keyword, count=24, offset=0):
         return products, total
 
     except Exception as e:
-        print(f"    Target search error for '{keyword}': {e}")
+        print(f"    ❌ Target search error for '{keyword}': {e}")
         return [], 0
 
 
 def verify_target_first_party(tcin):
     """
-    Double-check a single product by fetching its full PDP data.
-    Returns True if the product is sold by Target (first-party).
+    Double-check a single product by fetching its full PDP (product detail page)
+    data from Target's API. This gives us more reliable seller information
+    than the search results.
+
+    Returns True if the product is sold by Target (first-party), False otherwise.
     """
     url = "https://redsky.target.com/redsky_aggregations/v1/web/pdp_client_v1"
     params = {
@@ -293,30 +306,38 @@ def verify_target_first_party(tcin):
         })
 
         if resp.status_code != 200:
-            return True  # If we can't verify, keep it
+            return True  # If we can't verify, keep it (conservative)
 
         data = resp.json()
         product = data.get("data", {}).get("product", {})
 
+        # Check relationship type on the PDP response
         item = product.get("item", {})
         relationship = item.get("relationship_type_code", "")
         if relationship in ("TAP", "TPCL"):
             return False
 
+        # Check if there's a "sold by" field in the product details
+        # that indicates a third-party
         desc = product.get("item", {}).get("product_description", {})
         title = desc.get("title", "").lower()
 
+        # Check for marketplace indicators in fulfillment
         fulfillment = product.get("fulfillment", {})
+
+        # "store_only" fulfillment type = sold at physical Target stores
+        # This is a very strong signal it's a first-party Target product
         shipping = fulfillment.get("shipping_options", {})
         is_store_pickup = bool(fulfillment.get("store_options", []))
 
+        # Products available for in-store pickup are nearly always first-party
         if is_store_pickup:
             return True
 
         return True  # Default to keeping it
 
     except Exception:
-        return True
+        return True  # If verification fails, keep the product
 
 
 def discover_target_products(queries):
@@ -327,9 +348,9 @@ def discover_target_products(queries):
     all_products = {}
 
     for query in queries:
-        print(f"  Searching Target: '{query}'...")
+        print(f"  🔍 Searching Target: '{query}'...")
         offset = 0
-        max_pages = 5  # 5 pages x 24 = 120 products per query
+        max_pages = 5  # 5 pages × 24 = 120 products per query
 
         while offset < max_pages * 24:
             products, total = search_target(query, count=24, offset=offset)
@@ -341,7 +362,7 @@ def discover_target_products(queries):
                 tcin = p["tcin"]
                 if tcin not in all_products and is_sealed_product(p["name"]):
                     all_products[tcin] = p
-                    print(f"    [{len(all_products)}] {p['name'][:60]}... (TCIN: {tcin})")
+                    print(f"    ✅ [{len(all_products)}] {p['name'][:60]}... (TCIN: {tcin})")
 
             offset += 24
             if offset >= total:
@@ -364,11 +385,21 @@ def search_walmart(keyword, page=1):
     Extracts product data from the __NEXT_DATA__ JSON blob on search pages.
 
     FIRST-PARTY FILTER: Only includes products sold by Walmart.com directly.
+    Walmart's __NEXT_DATA__ JSON contains seller info at multiple paths:
+      - item.sellerName / item.sellerDisplayName — "Walmart.com" for first-party
+      - item.sellerId — "0" for Walmart.com, numeric string for 3P sellers
+      - item.fulfillmentBadge — "S2H" (Ship to Home by Walmart), "FC" (Fulfilled)
+      - item.sellerType — "INTERNAL" for Walmart, "EXTERNAL" for 3P
+      - item.badge.text — "Best seller" (often first-party)
+
+    We also check the seller via the product page when the search data is ambiguous.
     """
     url = f"https://www.walmart.com/search"
     params = {
         "q": keyword,
         "page": str(page),
+        # Walmart search supports a "Retailer" facet filter
+        # "facet": "retailer_id:0" filters to Walmart.com only
         "facet": "retailer_id:0",
     }
 
@@ -380,7 +411,7 @@ def search_walmart(keyword, page=1):
         })
 
         if resp.status_code != 200:
-            print(f"    Walmart search returned {resp.status_code}")
+            print(f"    ⚠️  Walmart search returned {resp.status_code}")
             return []
 
         html = resp.text
@@ -410,8 +441,10 @@ def search_walmart(keyword, page=1):
             if product_url and not product_url.startswith("http"):
                 product_url = f"https://www.walmart.com{product_url}"
 
-            # FIRST-PARTY SELLER FILTER
+            # ── FIRST-PARTY SELLER FILTER ──────────────────────
             # Method 1: Check sellerName / sellerDisplayName
+            # "Walmart.com" = first-party ✅
+            # Anything else = third-party marketplace seller ❌
             seller_name = (
                 item.get("sellerName", "") or
                 item.get("sellerDisplayName", "") or
@@ -419,18 +452,22 @@ def search_walmart(keyword, page=1):
             )
             seller_name_lower = seller_name.lower().strip()
 
+            # Walmart first-party seller names
             WALMART_SELLERS = {"walmart.com", "walmart", "walmart inc", "walmart inc."}
 
             if seller_name_lower and seller_name_lower not in WALMART_SELLERS:
-                continue
+                continue  # Skip third-party sellers
 
             # Method 2: Check sellerId
+            # "0" = Walmart.com, any other number = marketplace seller
             seller_id = str(item.get("sellerId", ""))
             if seller_id and seller_id not in ("0", ""):
-                if not seller_name_lower:
+                # Seller ID present but not "0" means marketplace
+                if not seller_name_lower:  # If we didn't already have a name match
                     continue
 
             # Method 3: Check sellerType field
+            # "INTERNAL" = Walmart, "EXTERNAL" = marketplace
             seller_type = item.get("sellerType", "") or item.get("seller_type", "")
             if seller_type.upper() == "EXTERNAL":
                 continue
@@ -439,7 +476,8 @@ def search_walmart(keyword, page=1):
             if item.get("isMarketplace") is True:
                 continue
 
-            # Method 5: Check fulfillment info
+            # Method 5: Check fulfillment info for Walmart shipping
+            # "Sold & shipped by Walmart" text in badges
             fulfillment_badges = item.get("fulfillmentBadgeGroups", [])
             has_walmart_fulfillment = False
             for badge_group in fulfillment_badges:
@@ -448,12 +486,14 @@ def search_walmart(keyword, page=1):
                     if "walmart" in badge_text:
                         has_walmart_fulfillment = True
                     if "sold by" in badge_text and "walmart" not in badge_text:
-                        continue
+                        continue  # Third-party seller badge
 
-            # Method 6: Price sanity check
+            # Method 6: Price sanity check — same as Target
             if price and price > 400:
-                print(f"    Skipping (price ${price:.2f} too high, likely 3P): {name[:50]}")
+                print(f"    ⚠️  Skipping (price ${price:.2f} too high, likely 3P): {name[:50]}")
                 continue
+
+            # ── END FIRST-PARTY FILTER ─────────────────────────
 
             if name and product_id:
                 products.append({
@@ -469,13 +509,15 @@ def search_walmart(keyword, page=1):
         return products
 
     except Exception as e:
-        print(f"    Walmart search error for '{keyword}': {e}")
+        print(f"    ❌ Walmart search error for '{keyword}': {e}")
         return []
 
 
 def verify_walmart_first_party(product_url):
     """
-    Double-check a Walmart product by fetching its product page.
+    Double-check a Walmart product by fetching its product page
+    and checking seller info in the full __NEXT_DATA__ response.
+
     Returns True if sold by Walmart.com, False otherwise.
     """
     if not product_url:
@@ -488,20 +530,24 @@ def verify_walmart_first_party(product_url):
         })
 
         if resp.status_code != 200:
-            return True
+            return True  # Can't verify, keep it
 
         html = resp.text
 
+        # Check for "Sold and shipped by Walmart.com" text
         if "Sold and shipped by Walmart" in html or "Sold &amp; shipped by Walmart" in html:
             return True
 
+        # Check for third-party seller indicators
         if "Sold by " in html and "Sold by Walmart" not in html:
+            # Extract seller name for logging
             seller_match = re.search(r'Sold by\s+([^<"]+)', html)
             if seller_match:
                 seller = seller_match.group(1).strip()
                 if seller.lower() not in ("walmart.com", "walmart"):
                     return False
 
+        # Try __NEXT_DATA__ on product page
         next_data_match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
         if next_data_match:
             try:
@@ -513,6 +559,7 @@ def verify_walmart_first_party(product_url):
                 if seller and seller.lower().strip() not in ("walmart.com", "walmart"):
                     return False
 
+                # Check offers array for primary seller
                 offers = product.get("offers", []) or product.get("buyBoxOffers", [])
                 for offer in offers:
                     offer_seller = offer.get("sellerName", "") or offer.get("sellerDisplayName", "")
@@ -524,16 +571,20 @@ def verify_walmart_first_party(product_url):
             except (json.JSONDecodeError, KeyError):
                 pass
 
-        return True
+        return True  # Default: keep it
 
     except Exception:
         return True
 
 
 def extract_walmart_from_html(html):
-    """Fallback: extract basic product info from Walmart HTML."""
+    """Fallback: extract basic product info from Walmart HTML, with seller filtering."""
     products = []
 
+    # Check for "Sold and shipped by Walmart" on the page
+    # In search results, this appears per-product as a badge
+
+    # Find product links
     links = re.findall(r'href="(/ip/[^"]+)"', html)
     names = re.findall(r'data-automation-id="product-title"[^>]*>([^<]+)', html)
 
@@ -549,7 +600,7 @@ def extract_walmart_from_html(html):
                 "price": None,
                 "image_url": "",
                 "walmart_url": f"https://www.walmart.com{link}",
-                "seller_name": "",
+                "seller_name": "",  # Unknown from HTML fallback
                 "source": "walmart",
             })
 
@@ -560,13 +611,14 @@ def discover_walmart_products(queries):
     """
     Search Walmart for all TCG products across multiple search queries.
     Deduplicates by Walmart product ID.
+    Uses retailer_id:0 facet filter to request Walmart.com-sold items only.
     """
     all_products = {}
 
     for query in queries:
-        print(f"  Searching Walmart: '{query}' (Walmart.com seller only)...")
+        print(f"  🔍 Searching Walmart: '{query}' (Walmart.com seller only)...")
 
-        for page in range(1, 4):
+        for page in range(1, 4):  # 3 pages per query
             products = search_walmart(query, page=page)
 
             if not products:
@@ -578,24 +630,26 @@ def discover_walmart_products(queries):
                     seller = p.get("seller_name", "")
                     seller_label = f" [Seller: {seller}]" if seller else ""
                     all_products[wid] = p
-                    print(f"    [{len(all_products)}] {p['name'][:55]}...{seller_label} (ID: {wid})")
+                    print(f"    ✅ [{len(all_products)}] {p['name'][:55]}...{seller_label} (ID: {wid})")
 
-            time.sleep(3)
+            time.sleep(3)  # Rate limit between pages
 
-        time.sleep(5)
+        time.sleep(5)  # Pause between queries
 
-    # Verify ambiguous products
+    # Optional: verify ambiguous products with a product page fetch
+    # This catches any that slipped through the search-level filter
     unverified = [p for p in all_products.values() if not p.get("seller_name")]
     if unverified:
-        print(f"\n  Verifying {len(unverified)} products with unknown seller...")
+        print(f"\n  🔍 Verifying {len(unverified)} products with unknown seller...")
         verified_products = {}
         for p in unverified:
             if verify_walmart_first_party(p["walmart_url"]):
                 verified_products[p["walmart_id"]] = p
             else:
-                print(f"    Removed (third-party): {p['name'][:55]}")
+                print(f"    ❌ Removed (third-party): {p['name'][:55]}")
             time.sleep(2)
 
+        # Replace unverified with verified
         for wid, p in all_products.items():
             if not p.get("seller_name") and wid not in verified_products:
                 del all_products[wid]
@@ -604,15 +658,16 @@ def discover_walmart_products(queries):
 
 
 # ══════════════════════════════════════════════════════════════════
-# SOURCE 3: POKEMON TCG API (canonical set/product catalog)
+# SOURCE 3: POKÉMON TCG API (canonical set/product catalog)
 # ══════════════════════════════════════════════════════════════════
 
 def fetch_pokemon_sets():
     """
-    Fetch all Pokemon TCG sets from the free Pokemon TCG API.
+    Fetch all Pokémon TCG sets from the free Pokémon TCG API.
+    This gives us the canonical list of set names to search for at retail.
     https://pokemontcg.io/
     """
-    print("  Fetching Pokemon TCG set catalog...")
+    print("  🃏 Fetching Pokémon TCG set catalog...")
 
     url = "https://api.pokemontcg.io/v2/sets"
     params = {"orderBy": "-releaseDate", "pageSize": "50"}
@@ -623,6 +678,7 @@ def fetch_pokemon_sets():
         data = resp.json()
         sets = data.get("data", [])
 
+        # Get the most recent sets (last 2 years of releases)
         recent_sets = []
         for s in sets:
             release = s.get("releaseDate", "")
@@ -634,11 +690,11 @@ def fetch_pokemon_sets():
                     "set_id": s.get("id", ""),
                 })
 
-        print(f"    Found {len(recent_sets)} recent Pokemon TCG sets")
+        print(f"    Found {len(recent_sets)} recent Pokémon TCG sets")
         return recent_sets
 
     except Exception as e:
-        print(f"    Pokemon TCG API error: {e}")
+        print(f"    ❌ Pokémon TCG API error: {e}")
         return []
 
 
@@ -649,22 +705,23 @@ def fetch_pokemon_sets():
 def merge_and_upsert(target_products, walmart_products, pokemon_sets):
     """
     Merge products from all sources, detect TCG + product type,
-    cross-reference Target <-> Walmart where possible, and upsert to Supabase.
+    cross-reference Target ↔ Walmart where possible, and upsert to Supabase.
     """
-    print(f"\nMerging {len(target_products)} Target + {len(walmart_products)} Walmart products...")
+    print(f"\n🔗 Merging {len(target_products)} Target + {len(walmart_products)} Walmart products...")
 
-    merged = {}
+    merged = {}  # Key: normalized name → product dict
 
     def normalize_name(name):
         """Create a fuzzy key for matching same product across retailers."""
         n = name.lower()
         n = re.sub(r'[^a-z0-9\s]', '', n)
         n = re.sub(r'\s+', ' ', n).strip()
+        # Remove common retailer-specific suffixes
         for remove in ["target exclusive", "walmart exclusive", "trading card game", "tcg", "card game"]:
             n = n.replace(remove, "")
         return n.strip()
 
-    # Process Target products first
+    # Process Target products first (higher quality data with TCIN/DPCI)
     for p in target_products:
         key = normalize_name(p["name"])
         tcg = detect_tcg(p["name"])
@@ -697,12 +754,14 @@ def merge_and_upsert(target_products, walmart_products, pokemon_sets):
             continue
 
         if key in merged:
+            # Same product found at both retailers — add Walmart IDs
             merged[key]["walmart_sku"] = p.get("walmart_id")
             merged[key]["walmart_url"] = p.get("walmart_url")
             if not merged[key]["image_url"] and p.get("image_url"):
                 merged[key]["image_url"] = p["image_url"]
-            print(f"    Cross-matched: {p['name'][:50]}...")
+            print(f"    🔗 Cross-matched: {p['name'][:50]}...")
         else:
+            # Walmart-only product
             ptype = detect_product_type(p["name"])
             merged[key] = {
                 "name": p["name"],
@@ -719,7 +778,8 @@ def merge_and_upsert(target_products, walmart_products, pokemon_sets):
                 "is_active": True,
             }
 
-    # Generate additional search queries from Pokemon set names
+    # Generate additional search queries from Pokémon set names
+    # This catches newly released sets that might not appear in generic searches
     set_queries = []
     for s in pokemon_sets:
         set_name = s["name"]
@@ -729,8 +789,8 @@ def merge_and_upsert(target_products, walmart_products, pokemon_sets):
         ])
 
     if set_queries:
-        print(f"\nRunning {len(set_queries)} set-specific Target searches...")
-        set_target = discover_target_products(set_queries[:20])
+        print(f"\n🎯 Running {len(set_queries)} set-specific Target searches...")
+        set_target = discover_target_products(set_queries[:20])  # Limit to avoid rate limits
         for p in set_target:
             key = normalize_name(p["name"])
             if key not in merged:
@@ -754,19 +814,21 @@ def merge_and_upsert(target_products, walmart_products, pokemon_sets):
 
     products = list(merged.values())
 
-    # Filter: only Pokemon and One Piece
+    # Filter: only Pokemon and One Piece (per user's request)
     products = [p for p in products if p["tcg"] in ("pokemon", "one_piece")]
 
-    print(f"\nFinal product count: {len(products)}")
-    print(f"   Pokemon: {sum(1 for p in products if p['tcg'] == 'pokemon')}")
+    print(f"\n📊 Final product count: {len(products)}")
+    print(f"   Pokémon: {sum(1 for p in products if p['tcg'] == 'pokemon')}")
     print(f"   One Piece: {sum(1 for p in products if p['tcg'] == 'one_piece')}")
 
+    # Count by product type
     types = {}
     for p in products:
         types[p["product_type"]] = types.get(p["product_type"], 0) + 1
     for ptype, count in sorted(types.items()):
         print(f"   {ptype}: {count}")
 
+    # Count retailer coverage
     both = sum(1 for p in products if p["target_tcin"] and p["walmart_url"])
     target_only = sum(1 for p in products if p["target_tcin"] and not p["walmart_url"])
     walmart_only = sum(1 for p in products if not p["target_tcin"] and p["walmart_url"])
@@ -776,16 +838,17 @@ def merge_and_upsert(target_products, walmart_products, pokemon_sets):
 
     # Upsert to Supabase
     if products:
-        print(f"\nUpserting {len(products)} products to Supabase...")
+        print(f"\n💾 Upserting {len(products)} products to Supabase...")
         url = f"{SUPABASE_URL}/rest/v1/restock_products"
 
+        # Batch in chunks of 25
         for i in range(0, len(products), 25):
             batch = products[i:i+25]
             resp = requests.post(url, headers=HEADERS_SUPA, json=batch)
             if resp.status_code < 300:
-                print(f"   Batch {i//25 + 1}: {len(batch)} products upserted")
+                print(f"   ✅ Batch {i//25 + 1}: {len(batch)} products upserted")
             else:
-                print(f"   Batch {i//25 + 1} error: {resp.status_code} {resp.text[:200]}")
+                print(f"   ❌ Batch {i//25 + 1} error: {resp.status_code} {resp.text[:200]}")
 
     return products
 
@@ -797,37 +860,37 @@ def merge_and_upsert(target_products, walmart_products, pokemon_sets):
 def run():
     start = datetime.now(timezone.utc)
     print("=" * 60)
-    print("CollectLocal — TCG Product Auto-Discovery")
+    print("🔎 CollectLocal — TCG Product Auto-Discovery")
     print(f"   Started: {start.isoformat()}")
     print("=" * 60)
 
     # Source 1: Target search
-    print("\nPHASE 1: Target Product Discovery")
+    print("\n🎯 PHASE 1: Target Product Discovery")
     print("-" * 40)
     all_queries = POKEMON_QUERIES + ONE_PIECE_QUERIES
     target_products = discover_target_products(all_queries)
-    print(f"   Found {len(target_products)} Target products")
+    print(f"   → Found {len(target_products)} Target products")
 
     # Source 2: Walmart search
-    print("\nPHASE 2: Walmart Product Discovery")
+    print("\n🔵 PHASE 2: Walmart Product Discovery")
     print("-" * 40)
     walmart_products = discover_walmart_products(all_queries)
-    print(f"   Found {len(walmart_products)} Walmart products")
+    print(f"   → Found {len(walmart_products)} Walmart products")
 
-    # Source 3: Pokemon TCG API
-    print("\nPHASE 3: Pokemon TCG Set Catalog")
+    # Source 3: Pokémon TCG API
+    print("\n🃏 PHASE 3: Pokémon TCG Set Catalog")
     print("-" * 40)
     pokemon_sets = fetch_pokemon_sets()
-    print(f"   Found {len(pokemon_sets)} recent sets")
+    print(f"   → Found {len(pokemon_sets)} recent sets")
 
     # Merge and upsert
-    print("\nPHASE 4: Merge & Upsert")
+    print("\n🔗 PHASE 4: Merge & Upsert")
     print("-" * 40)
     products = merge_and_upsert(target_products, walmart_products, pokemon_sets)
 
     elapsed = (datetime.now(timezone.utc) - start).total_seconds()
     print(f"\n{'=' * 60}")
-    print(f"Discovery complete in {elapsed:.0f}s")
+    print(f"✅ Discovery complete in {elapsed:.0f}s")
     print(f"   Total products discovered: {len(products)}")
     print(f"{'=' * 60}\n")
 

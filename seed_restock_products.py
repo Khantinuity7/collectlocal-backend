@@ -1,7 +1,7 @@
 """
 CollectLocal — Seed Restock Products & Target Stores
 =====================================================
-Populates the restock_products table with popular Pokemon and One Piece TCG
+Populates the restock_products table with popular Pokémon and One Piece TCG
 products, plus seeds nearby Target stores using Target's store locator API.
 
 Run once to set up, then periodically to add new products as sets release.
@@ -33,7 +33,7 @@ HEADERS = {
 # walmart_url: Direct product page URL for scraping
 
 PRODUCTS = [
-    # ==================== POKEMON TCG ====================
+    # ==================== POKÉMON TCG ====================
 
     # --- Scarlet & Violet: Prismatic Evolutions ---
     {
@@ -119,9 +119,9 @@ PRODUCTS = [
         "packaging_keywords": ["twilight", "masquerade", "elite", "trainer"],
     },
 
-    # --- Pokemon: Misc High-Demand ---
+    # --- Pokémon: Misc High-Demand ---
     {
-        "name": "Pokemon TCG 3-Pack Blister (Latest Set)",
+        "name": "Pokémon TCG 3-Pack Blister (Latest Set)",
         "tcg": "pokemon",
         "product_type": "blister",
         "msrp": 14.99,
@@ -184,7 +184,7 @@ PRODUCTS = [
 
 def seed_products():
     """Upsert products into Supabase."""
-    print(f"Seeding {len(PRODUCTS)} restock products...")
+    print(f"📦 Seeding {len(PRODUCTS)} restock products...")
 
     # Add defaults
     for p in PRODUCTS:
@@ -200,9 +200,9 @@ def seed_products():
     resp = requests.post(url, headers=HEADERS, json=PRODUCTS)
 
     if resp.status_code < 300:
-        print(f"   {len(PRODUCTS)} products upserted")
+        print(f"   ✅ {len(PRODUCTS)} products upserted")
     else:
-        print(f"   Error: {resp.status_code} {resp.text[:300]}")
+        print(f"   ❌ Error: {resp.status_code} {resp.text[:300]}")
 
 
 # ── Target Store Locator ────────────────────────────────────────
@@ -212,7 +212,7 @@ def fetch_target_stores(zip_code="75080", radius_miles=50):
     Fetch Target store locations using Target's store locator API.
     This is the same API Target.com uses for "Find a store."
     """
-    print(f"\nFetching Target stores near {zip_code} ({radius_miles} mi)...")
+    print(f"\n🎯 Fetching Target stores near {zip_code} ({radius_miles} mi)...")
 
     url = "https://redsky.target.com/redsky_aggregations/v1/web/store_location_v1"
     params = {
@@ -254,7 +254,7 @@ def fetch_target_stores(zip_code="75080", radius_miles=50):
         return stores
 
     except Exception as e:
-        print(f"   Target store locator error: {e}")
+        print(f"   ❌ Target store locator error: {e}")
         return []
 
 
@@ -266,7 +266,8 @@ def seed_stores(zip_code="75080"):
         print("   No stores to seed")
         return
 
-    # Also add a few manual Walmart entries
+    # Also add a few manual Walmart entries (no public API for store locations)
+    # Users can add more via the app or you can scrape Walmart's store finder
     walmart_stores = [
         {
             "retailer": "walmart",
@@ -298,22 +299,22 @@ def seed_stores(zip_code="75080"):
 
     all_stores = stores + walmart_stores
 
-    print(f"\nSeeding {len(all_stores)} stores ({len(stores)} Target + {len(walmart_stores)} Walmart)...")
+    print(f"\n🏬 Seeding {len(all_stores)} stores ({len(stores)} Target + {len(walmart_stores)} Walmart)...")
 
     url = f"{SUPABASE_URL}/rest/v1/retail_stores"
     resp = requests.post(url, headers=HEADERS, json=all_stores)
 
     if resp.status_code < 300:
-        print(f"   {len(all_stores)} stores upserted")
+        print(f"   ✅ {len(all_stores)} stores upserted")
     else:
-        print(f"   Error: {resp.status_code} {resp.text[:300]}")
+        print(f"   ❌ Error: {resp.status_code} {resp.text[:300]}")
 
 
 # ── Main ────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("CollectLocal — Restock Seed Script")
+    print("🏪 CollectLocal — Restock Seed Script")
     print("=" * 60)
 
     seed_products()
@@ -323,7 +324,7 @@ if __name__ == "__main__":
     seed_stores(zip_code)
 
     print(f"\n{'=' * 60}")
-    print("Seeding complete!")
+    print("✅ Seeding complete!")
     print("   Next steps:")
     print("   1. Run the SQL migration in Supabase SQL Editor (if not done)")
     print("   2. Verify products: visit your Supabase dashboard > Table Editor > restock_products")
