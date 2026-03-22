@@ -1,31 +1,39 @@
-name: Restock Check
+# CollectLocal — Restock Checker Pipeline
+# Runs every 15 minutes on GitHub Actions FREE tier
+# Checks Target (Redsky API) and Walmart for TCG product restocks
+# Sends push notifications when products come back in stock
+
+name: Check Restocks
 
 on:
+  # Every 15 minutes — ~2,880 runs/month
+  # GitHub Actions free tier: 2,000 min/month (private) or 33,000 min/month (public)
+  # Each run takes ~2-5 min, so ~6,000-15,000 min/month
+  # For private repos: run every 30 min instead (1,440 runs × 3 min = 4,320 min)
   schedule:
-    - cron: '*/15 * * * *'  # Every 15 minutes
-  workflow_dispatch:  # Allow manual trigger
+    - cron: '*/15 * * * *'
+
+  # Manual trigger for testing
+  workflow_dispatch:
 
 jobs:
-  check-restock:
+  check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
+          cache: 'pip'
 
       - name: Install dependencies
-        run: |
-          pip install requests python-dotenv
+        run: pip install -r requirements.txt
 
       - name: Run restock checker
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: |
-          python restock_checker.py
+        run: python restock_checker.py

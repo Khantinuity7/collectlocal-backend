@@ -1,31 +1,35 @@
-name: Discover Products
+# CollectLocal — TCG Product Auto-Discovery
+# Runs weekly to find new TCG products at Target + Walmart
+# Also runs on-demand via workflow_dispatch
+
+name: Discover New TCG Products
 
 on:
+  # Every Monday at 6 AM UTC (midnight CST)
   schedule:
-    - cron: '0 6 * * 1'  # Every Monday at 6 AM UTC
-  workflow_dispatch:  # Allow manual trigger
+    - cron: '0 6 * * 1'
+
+  # Manual trigger
+  workflow_dispatch:
 
 jobs:
   discover:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
+          cache: 'pip'
 
       - name: Install dependencies
-        run: |
-          pip install requests python-dotenv
+        run: pip install -r requirements.txt
 
-      - name: Run product discovery
+      - name: Discover products
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: |
-          python discover_products.py
+        run: python discover_products.py
