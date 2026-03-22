@@ -105,11 +105,35 @@ async function loadSkus(catId: number, setId: number): Promise<Record<string, an
 // ── Match helpers ────────────────────────────────────────────
 
 function findSet(sets: Record<string, any>, name: string): any | null {
-  const lower = name.toLowerCase();
+  const lower = name.toLowerCase().trim();
+
+  // 1. Exact match
   if (sets[lower]) return sets[lower];
-  for (const [sname, sdata] of Object.entries(sets)) {
-    if (lower.includes(sname) || sname.includes(lower)) return sdata;
+
+  // 2. Try common set name variations (e.g. "SWSH12: Silver Tempest" → "Silver Tempest")
+  const afterColon = lower.includes(":") ? lower.split(":").pop()!.trim() : null;
+  if (afterColon && sets[afterColon]) return sets[afterColon];
+
+  // 3. Prefix code match (e.g. "sv7" matches "Stellar Crown" with code "sv7")
+  for (const [, sdata] of Object.entries(sets)) {
+    const code = (sdata.code || sdata.ptcgo_code || "").toLowerCase();
+    if (code && code === lower) return sdata;
   }
+
+  // 4. Substring match — prefer shorter (more specific) set names to avoid false positives
+  const candidates: [string, any][] = [];
+  for (const [sname, sdata] of Object.entries(sets)) {
+    if (lower === sname || sname === afterColon) return sdata;
+    if (lower.includes(sname) || sname.includes(lower)) {
+      candidates.push([sname, sdata]);
+    }
+  }
+  // Sort by name length descending — longer name = more specific match
+  if (candidates.length > 0) {
+    candidates.sort((a, b) => b[0].length - a[0].length);
+    return candidates[0][1];
+  }
+
   return null;
 }
 
@@ -169,6 +193,96 @@ function pickBestSubtype(tcgPrices: Record<string, any>): [string, any] | null {
   return null;
 }
 
+// ── Search API fallback ─────────────────────────────────────
+
+async function searchAndPrice(catId: number, cardName: string, setName?: string, cardNumber?: string): Promise<any | null> {
+  const query = cardNumber ? `${cardName} ${cardNumber}` : cardName;
+  const resp = await fetch(`${TCGTRACK_BASE}/${catId}/search?q=${encodeURIComponent(query)}`);
+  if (!resp.ok) return null;
+  const json = await resp.json();
+  const results = json.results || json.products || [];
+  if (results.length === 0) return null;
+
+  // Score each result: prefer matching set name, card number, and exact name
+  let best: any = null;
+  let bestScore = -1;
+
+  for (const r of results) {
+    let score = 0;
+    const rName = (r.clean_name || r.name || "").toLowerCase();
+    const rSetName = (r.set_name || r.group_name || "").toLowerCase();
+    const rNumber = (r.number || "").toLowerCase();
+    const targetName = cardName.toLowerCase();
+
+    // Name match
+    if (rName === targetName) score += 10;
+    else if (rName.includes(targetName) || targetName.includes(rName)) score += 5;
+
+    // Set name match
+    if (setName) {
+      const sLower = setName.toLowerCase();
+      if (rSetName === sLower) score += 8;
+      else if (rSetName.includes(sLower) || sLower.includes(rSetName)) score += 3;
+    }
+
+    // Card number match
+    if (cardNumber && rNumber === cardNumber.toLowerCase()) score += 12;
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = r;
+    }
+  }
+
+  if (!best) return null;
+
+  // Get pricing for the matched product
+  const setId = best.set_id || best.group_id;
+  if (!setId) return null;
+
+  const [pricing, skuData] = await Promise.all([
+    loadPricing(catId, setId),
+    loadSkus(catId, setId),
+  ]);
+
+  const productId = String(best.id || best.product_id);
+  const productPricing = pricing[productId] || {};
+  const tcgPrices = productPricing.tcg || {};
+  const bestSubtype = pickBestSubtype(tcgPrices);
+
+  if (!bestSubtype) return null;
+
+  const productSkus = skuData[productId] || {};
+  const skus = Object.entries(productSkus).map(([skuId, sku]: [string, any]) => ({
+    skuId,
+    condition: sku.cnd || "",
+    variant: sku.var || "",
+    language: sku.lng || "",
+    marketPrice: sku.mkt,
+    lowPrice: sku.low,
+    highPrice: sku.hi,
+    listingCount: sku.cnt || 0,
+  }));
+
+  return {
+    marketPrice: bestSubtype[1].market,
+    lowPrice: bestSubtype[1].low,
+    subType: bestSubtype[0],
+    tcgplayerUrl: best.tcgplayer_url || best.url || "",
+    manapoolUrl: best.manapool_url || "",
+    imageUrl: best.image_url || best.imageUrl || "",
+    productId: best.id || best.product_id,
+    setName: best.set_name || best.group_name || "",
+    number: best.number || "",
+    rarity: best.rarity || "",
+    allSubtypes: Object.fromEntries(
+      Object.entries(tcgPrices).map(([sub, data]: [string, any]) => [sub, { market: data.market, low: data.low }])
+    ),
+    manapoolPrices: productPricing.manapool || {},
+    skus,
+  };
+}
+
 // ── Main handler ─────────────────────────────────────────────
 
 serve(async (req: Request) => {
@@ -202,20 +316,27 @@ serve(async (req: Request) => {
     // 1. Find set
     const sets = await loadSets(catId);
     const setData = setName ? findSet(sets, setName) : null;
-    if (!setData) {
-      return new Response(
-        JSON.stringify({ error: `Set not found: ${setName}`, marketPrice: null }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-    const setId = setData.id ?? setData.set_id ?? setData.groupId;
 
-    // 2. Find product (by number first if available, then by name)
-    const products = await loadProducts(catId, setId);
-    const product = findProduct(products, cardName, cardNumber);
+    let product: any = null;
+    let setId: number | null = null;
+
+    if (setData) {
+      setId = setData.id ?? setData.set_id ?? setData.groupId;
+      // 2. Find product (by number first if available, then by name)
+      const products = await loadProducts(catId, setId!);
+      product = findProduct(products, cardName, cardNumber);
+    }
+
+    // 3. Fallback to search API when set or product not found
     if (!product) {
+      const searchResult = await searchAndPrice(catId, cardName, setName, cardNumber);
+      if (searchResult) {
+        return new Response(JSON.stringify(searchResult), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
       return new Response(
-        JSON.stringify({ error: `Card not found: ${cardName}`, marketPrice: null }),
+        JSON.stringify({ error: `Card not found: ${cardName} in ${setName || "any set"}`, marketPrice: null }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
