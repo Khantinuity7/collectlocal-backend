@@ -1415,8 +1415,7 @@ def process_apify_result(item: dict) -> dict | None:
                     if photo_uri and photo_uri not in listing_photos:
                         listing_photos.append(photo_uri)
 
-        
-        # No photo cap -- grab every image from the listing
+        # No photo cap — grab every image from the listing
 
         # ── AI Vision Card Identification ──
         # Send the listing photo to Gemini Flash to identify the actual card.
