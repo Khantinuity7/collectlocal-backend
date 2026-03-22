@@ -625,7 +625,7 @@ def fetch_listing_details(listing_url: str) -> dict:
         for uri in photo_uri_matches:
             # Unescape JSON-encoded URLs (e.g., \/ -> /)
             clean_uri = uri.replace("\\/", "/")
-            if clean_uri not in seen_urls and len(photos) < 10:
+            if clean_uri not in seen_urls:
                 seen_urls.add(clean_uri)
                 photos.append(clean_uri)
 
@@ -635,7 +635,7 @@ def fetch_listing_details(listing_url: str) -> dict:
             html, re.IGNORECASE
         )
         for uri in og_img_matches:
-            if uri not in seen_urls and len(photos) < 10:
+            if uri not in seen_urls:
                 seen_urls.add(uri)
                 photos.append(uri)
 
@@ -673,7 +673,7 @@ def enrich_listings_with_details(listings: list[dict]) -> list[dict]:
 
         # Update description if we got one
         if details["description"]:
-            listing["description"] = details["description"][:500]
+            listing["description"] = details["description"]
             enriched_count += 1
 
         # Update lat/lng if we got coordinates and didn't have them
@@ -694,7 +694,7 @@ def enrich_listings_with_details(listings: list[dict]) -> list[dict]:
         if details.get("photos"):
             existing = set(listing.get("listing_photos", []))
             for photo_url in details["photos"]:
-                if photo_url not in existing and len(listing.get("listing_photos", [])) < 10:
+                if photo_url not in existing:
                     listing.setdefault("listing_photos", []).append(photo_url)
                     existing.add(photo_url)
 
@@ -1415,8 +1415,8 @@ def process_apify_result(item: dict) -> dict | None:
                     if photo_uri and photo_uri not in listing_photos:
                         listing_photos.append(photo_uri)
 
-        # Cap at 10 photos to avoid bloat
-        listing_photos = listing_photos[:10]
+        
+        # No photo cap -- grab every image from the listing
 
         # ── AI Vision Card Identification ──
         # Send the listing photo to Gemini Flash to identify the actual card.
