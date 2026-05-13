@@ -84,38 +84,3 @@ CREATE POLICY "Allow service role write lot_cards"
     FOR ALL
     USING (auth.role() = 'service_role');
 
--- ============================================================
--- View: ALL active listings with lot card data joined when available
--- The iOS app queries this view instead of the raw listings table
--- ============================================================
-CREATE OR REPLACE VIEW listings_with_lot_cards AS
-SELECT
-    l.*,
-    la.total_estimated_value AS lot_total_value,
-    la.card_count AS lot_cards_count,
-    la.unidentified_count AS lot_unidentified,
-    la.lot_confidence,
-    la.analyzed_at AS lot_analyzed_at,
-    CASE WHEN la.id IS NOT NULL THEN
-        COALESCE(
-            json_agg(
-                json_build_object(
-                    'card_name', lc.card_name,
-                    'card_set', lc.card_set,
-                    'card_number', lc.card_number,
-                    'estimated_grade', lc.estimated_grade,
-                    'confidence', lc.confidence,
-                    'market_price', lc.market_price,
-                    'price_source', lc.price_source,
-                    'ebay_url', lc.ebay_url,
-                    'source_type', lc.source_type
-                ) ORDER BY lc.market_price DESC NULLS LAST
-            ) FILTER (WHERE lc.id IS NOT NULL),
-            '[]'::json
-        )
-    ELSE NULL END AS lot_cards
-FROM listings l
-LEFT JOIN lot_analysis la ON la.listing_id = l.id
-LEFT JOIN lot_cards lc ON lc.lot_analysis_id = la.id
-WHERE l.is_active = TRUE
-GROUP BY l.id, la.id;
