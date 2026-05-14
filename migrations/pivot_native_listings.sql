@@ -9,6 +9,12 @@
 -- post-merge to clear all FB-scraped rows before native listings flow in).
 -- ============================================================
 
+-- Drop the listings_with_lot_cards view first. It depends on columns
+-- renamed/dropped below (scraped_at among them), so Postgres blocks the
+-- ALTERs until the view is gone. Per the pivot, the view is intentionally
+-- NOT recreated -- the Scan feature queries lot_analysis directly.
+DROP VIEW IF EXISTS listings_with_lot_cards;
+
 -- Rename marketplace -> source (still tags origin; default flips to 'native')
 ALTER TABLE listings RENAME COLUMN marketplace TO source;
 ALTER TABLE listings ALTER COLUMN source SET DEFAULT 'native';
